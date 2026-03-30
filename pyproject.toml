@@ -54,10 +54,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-username/nist-mcp"
-Documentation = "https://github.com/your-username/nist-mcp#readme"
-Repository = "https://github.com/your-username/nist-mcp"
-"Bug Tracker" = "https://github.com/your-username/nist-mcp/issues"
+Homepage = "https://github.com/your-username/nist-mcp-server"
+Documentation = "https://github.com/your-username/nist-mcp-server#readme"
+Repository = "https://github.com/your-username/nist-mcp-server"
+"Bug Tracker" = "https://github.com/your-username/nist-mcp-server/issues"
 
 [project.scripts]
 nist-mcp = "nist_mcp.server:main"

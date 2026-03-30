@@ -7,11 +7,15 @@ A professional Model Context Protocol (MCP) server providing comprehensive acces
 Get started with NIST's complete control catalog in minutes:
 
 ```bash
-# Install and run
-git clone https://github.com/your-username/nist-mcp.git
-cd nist-mcp
+# Clone the repository
+git clone https://github.com/skyionblue/nist-mcp-server.git
+cd nist-mcp-server
+
+# Install dependencies and download NIST data
 ./scripts/install.sh
-python -m nist_mcp.server
+
+# Run the server
+uv run python -m nist_mcp.server
 ```
 
 That's it! Your MCP server is now running with access to 1,196+ NIST security controls.
@@ -38,35 +42,54 @@ That's it! Your MCP server is now running with access to 1,196+ NIST security co
 
 ## 📖 Installation & Setup
 
+### Prerequisites
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) package manager (recommended) or pip
+
 ### One-Command Setup (Recommended)
 
 ```bash
-git clone https://github.com/your-username/nist-mcp.git
-cd nist-mcp
+git clone https://github.com/your-username/nist-mcp-server.git
+cd nist-mcp-server
 ./scripts/install.sh
-python -m nist_mcp.server
+uv run python -m nist_mcp.server
 ```
 
 **That's it!** Your NIST MCP server is now running with 1,196+ controls.
 
-### Manual Setup
+### Manual Setup with uv (Recommended)
 
 ```bash
-# 1. Clone and install
-git clone https://github.com/your-username/nist-mcp.git
-cd nist-mcp
-pip install -e ".[dev]"
+# 1. Clone the repository
+git clone https://github.com/your-username/nist-mcp-server.git
+cd nist-mcp-server
 
-# 2. Download NIST data
-python scripts/download_nist_data.py
+# 2. Install dependencies
+uv sync
 
-# 3. Start server
-python -m nist_mcp.server
+# 3. Download NIST data
+uv run python scripts/download_nist_data.py
+
+# 4. Start server
+uv run python -m nist_mcp.server
 ```
 
-### Prerequisites
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) package manager (optional, but recommended)
+### Manual Setup with pip
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/your-username/nist-mcp-server.git
+cd nist-mcp-server
+
+# 2. Install package in editable mode
+pip install -e ".[dev]"
+
+# 3. Download NIST data
+python scripts/download_nist_data.py
+
+# 4. Start server
+python -m nist_mcp.server
+```
 
 ## 🛠️ Practical Examples
 
@@ -208,7 +231,7 @@ Here are real examples of how to use the NIST MCP tools:
 ## Project Structure
 
 ```
-nist-mcp/
+nist-mcp-server/
 ├── src/nist_mcp/           # Main package
 │   ├── server.py           # MCP server implementation
 │   ├── data/               # Data loading and caching
@@ -242,10 +265,10 @@ Uses official public domain NIST data:
 
 ### Development & Testing
 ```bash
-uv sync --dev                    # Install dev tools
-make test                       # Run full test suite
-make test-security              # Security testing only
-python -m nist_mcp.server       # Start server
+uv sync --dev                         # Install dev tools
+uv run make test                      # Run full test suite
+uv run make test-security             # Security testing only
+uv run python -m nist_mcp.server      # Start server
 ```
 
 ### License
@@ -255,5 +278,5 @@ python -m nist_mcp.server       # Start server
 
 ### Support
 - [Documentation](docs/README.md)
-- [Create Issue](https://github.com/your-username/nist-mcp/issues)
+- [Create Issue](https://github.com/your-username/nist-mcp-server/issues)
 - [Contributing Guide](CONTRIBUTING.md)

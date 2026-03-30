@@ -91,6 +91,50 @@ python scripts/download_nist_data.py
 python -m nist_mcp.server
 ```
 
+## 🔌 Claude Code Integration
+
+To use this MCP server with [Claude Code](https://claude.ai/code), follow these steps after completing the installation above.
+
+### Option 1: CLI Command (Recommended)
+
+From the project directory, run:
+
+```bash
+claude mcp add --transport stdio --scope user nist-mcp -- uv run python -m nist_mcp.server
+```
+
+- Use `--scope user` to make the server available across all your projects
+- Use `--scope project` to share the configuration with your team (saves to `.mcp.json`)
+
+### Option 2: Manual Configuration
+
+Add the following to your `~/.claude.json` file:
+
+```json
+{
+  "mcpServers": {
+    "nist-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "nist_mcp.server"],
+      "cwd": "/path/to/nist-mcp-server",
+      "env": {}
+    }
+  }
+}
+```
+
+Replace `/path/to/nist-mcp-server` with the actual path to your cloned repository.
+
+### Verify the Configuration
+
+```bash
+claude mcp list          # List all configured MCP servers
+claude mcp get nist-mcp  # Check this server's configuration
+```
+
+Once configured, use the `/mcp` command within Claude Code to see connected servers and their available tools.
+
 ## 🛠️ Practical Examples
 
 Here are real examples of how to use the NIST MCP tools:

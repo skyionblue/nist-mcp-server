@@ -172,11 +172,10 @@ class ControlTools:
 
         controls_data = await self.data_loader.load_controls()
 
-        # Extract all controls from all groups (OSCAL catalog structure)
-        controls_db = []
-        groups = controls_data.get("catalog", {}).get("groups", [])
-        for group in groups:
-            controls_db.extend(group.get("controls", []))
+        # Include enhancements, not just group-level base controls: official baselines
+        # list enhancements (e.g. ac-2.1) as requirements in their own right, so taking
+        # only group children silently under-reports the baseline.
+        controls_db = self.data_loader.flatten_controls(controls_data)
 
         selected_controls = []
         found_control_ids = set()

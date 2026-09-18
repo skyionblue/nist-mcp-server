@@ -4,6 +4,7 @@ Provides persistent storage for assessments, monitoring results, and remediation
 """
 
 import sqlite3
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -252,7 +253,9 @@ class HistoricalStorage:
 
     def record_monitoring_check(self, check_data: Dict[str, Any]) -> str:
         """Record a monitoring check result"""
-        check_id = f"check_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Second-precision ids collide when several controls are checked in the same
+        # second, and the primary-key insert then fails, losing that result.
+        check_id = f"check_{uuid.uuid4().hex}"
 
         with self._connect() as conn:
             conn.execute(

@@ -45,9 +45,16 @@ class NISTDataLoader:
                 missing_files.append(file_path)
 
         if missing_files:
-            logger.warning(f"Missing data files: {missing_files}")
-            logger.info(
-                "Run 'python scripts/download_nist_data.py' to download required data"
+            # Hard failure, not a warning. Without these files every control lookup
+            # returns nothing, and the server would otherwise report success while
+            # serving an empty catalog — the worst outcome for a compliance tool.
+            raise FileNotFoundError(
+                "NIST data files are missing, so no controls can be served: "
+                + ", ".join(missing_files)
+                + ". Run 'uv run python scripts/download_nist_data.py' from "
+                + str(self.data_path.parent)
+                + " to fetch them (they are deliberately not committed — see the "
+                + "'Downloaded NIST data' entry in .gitignore)."
             )
 
     async def load_controls(self, force_reload: bool = False) -> dict[str, Any]:
@@ -274,15 +281,20 @@ class NISTDataLoader:
 
         root = ET.fromstring(xml_content)
 
-        # Parse XML structure - this is a simplified parser
-        # In production, you'd want more robust XML parsing based on actual NIST XML schema
+        # OSCAL XML declares a default namespace (http://csrc.nist.gov/ns/oscal/1.0), so
+        # bare XPaths like ".//control" match nothing. Derive the namespace from the root
+        # element and qualify every lookup; fall back to unqualified names if absent.
+        ns = root.tag.split("}")[0].strip("{") if "}" in root.tag else ""
+
+        def q(tag: str) -> str:
+            return f"{{{ns}}}{tag}" if ns else tag
+
         controls: list[dict[str, Any]] = []
 
-        # Look for control elements (adjust XPath based on actual XML structure)
-        for control_elem in root.findall(".//control"):
+        for control_elem in root.findall(f".//{q('control')}"):
             control_id = control_elem.get("id", "")
 
-            title_elem = control_elem.find(".//title")
+            title_elem = control_elem.find(f".//{q('title')}")
             title = title_elem.text if title_elem is not None else ""
 
             # Extract other control properties
@@ -294,15 +306,27 @@ class NISTDataLoader:
             }
 
             # Parse control parts (statement, guidance, etc.)
-            for part_elem in control_elem.findall(".//part"):
+            for part_elem in control_elem.findall(f".//{q('part')}"):
                 part_name = part_elem.get("name", "")
-                part_prose = part_elem.find(".//prose")
+                part_prose = part_elem.find(f".//{q('prose')}")
                 part_text = part_prose.text if part_prose is not None else ""
 
                 if isinstance(control["parts"], list):
                     control["parts"].append({"name": part_name, "prose": part_text})
 
             controls.append(control)
+
+        # Emit the same grouped OSCAL shape as the JSON path. Returning a flat
+        # `catalog.controls` array here meant the documented XML fallback loaded
+        # "successfully" while every list/search/family/get operation saw zero controls,
+        # because they all traverse `catalog.groups[].controls`.
+        groups: dict[str, dict[str, Any]] = {}
+        for control in controls:
+            family = control.get("id", "").split("-")[0].lower() or "unknown"
+            group = groups.setdefault(
+                family, {"id": family, "title": family.upper(), "controls": []}
+            )
+            group["controls"].append(control)
 
         return {
             "catalog": {
@@ -311,30 +335,45 @@ class NISTDataLoader:
                     "title": "NIST SP 800-53 Rev 5 Controls (parsed from XML)",
                     "version": "5.0",
                 },
-                "controls": controls,
+                "groups": list(groups.values()),
             }
         }
+
+    @staticmethod
+    def flatten_controls(controls_data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return every control in an OSCAL catalog, including nested enhancements.
+
+        OSCAL nests controls under ``catalog.groups[].controls``, and each base control
+        nests its enhancements under its own ``controls`` key. Code that reads a flat
+        ``catalog.controls`` array finds nothing, and code that reads only group-level
+        controls silently drops every enhancement. This is the single accessor both
+        cases should use.
+        """
+        flattened: list[dict[str, Any]] = []
+
+        def _walk(controls: list[dict[str, Any]]) -> None:
+            for control in controls:
+                flattened.append(control)
+                nested = control.get("controls")
+                if nested:
+                    _walk(nested)
+
+        catalog = controls_data.get("catalog", {})
+        for group in catalog.get("groups", []):
+            _walk(group.get("controls", []))
+
+        # Tolerate a flat catalog too, so callers work with either shape.
+        _walk(catalog.get("controls", []))
+        return flattened
 
     def get_control_by_id(
         self, controls_data: dict[str, Any], control_id: str
     ) -> dict[str, Any] | None:
-        """Find a specific control by ID (including enhancements)"""
-        # Controls are nested in groups in OSCAL format
-        groups = controls_data.get("catalog", {}).get("groups", [])
-
-        for group in groups:
-            controls = group.get("controls", [])
-            for control in controls:
-                # Check the base control
-                if control.get("id", "").upper() == control_id.upper():
-                    return control
-
-                # Check enhancements nested within the control
-                enhancements = control.get("controls", [])
-                for enhancement in enhancements:
-                    if enhancement.get("id", "").upper() == control_id.upper():
-                        return enhancement
-
+        """Find a specific control by ID, including enhancements at any depth."""
+        wanted = control_id.upper()
+        for control in self.flatten_controls(controls_data):
+            if control.get("id", "").upper() == wanted:
+                return control
         return None
 
     def search_controls_by_keyword(
@@ -344,60 +383,45 @@ class NISTDataLoader:
         family: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search controls by keyword in title or content"""
-        # Controls are nested in groups in OSCAL format
-        matches = []
+        """Search controls by keyword in title or content, including enhancements."""
+        matches: list[dict[str, Any]] = []
         keyword_lower = keyword.lower()
+        family_upper = family.upper() if family else None
 
-        groups = controls_data.get("catalog", {}).get("groups", [])
-        for group in groups:
-            controls = group.get("controls", [])
-            for control in controls:
-                control_id = control.get("id", "")
+        for control in self.flatten_controls(controls_data):
+            control_id = control.get("id", "").upper()
 
-                # Filter by family if specified
-                if family and not control_id.startswith(family.upper()):
-                    continue
+            # Filter by family if specified (case-insensitive: ids may be "ac-1" or "AC-1")
+            if family_upper and not control_id.startswith(family_upper):
+                continue
 
-                # Search in title
-                title = control.get("title", "").lower()
-                if keyword_lower in title:
-                    matches.append(control)
-                    continue
-
+            # Search in title
+            if keyword_lower in control.get("title", "").lower():
+                matches.append(control)
+            else:
                 # Search in control parts/content
                 parts = control.get("parts", [])
                 if isinstance(parts, list):
                     for part in parts:
-                        prose = part.get("prose", "").lower()
-                        if keyword_lower in prose:
+                        if keyword_lower in (part.get("prose") or "").lower():
                             matches.append(control)
                             break
 
-                if len(matches) >= limit:
-                    return matches[:limit]
+            if len(matches) >= limit:
+                break
 
         return matches[:limit]
 
     def get_controls_by_family(
         self, controls_data: dict[str, Any], family: str
     ) -> list[dict[str, Any]]:
-        """Get all controls in a specific family"""
-        # Controls are nested in groups in OSCAL format
-        family_controls = []
+        """Get all controls in a family, including enhancements."""
         family_upper = family.upper()
-        family_lower = family.lower()
-
-        groups = controls_data.get("catalog", {}).get("groups", [])
-        for group in groups:
-            controls = group.get("controls", [])
-            for control in controls:
-                control_id = control.get("id", "")
-                # Check case-insensitively - controls may be stored as "ac-1" or "AC-1"
-                if control_id.upper().startswith(family_upper) or control_id.lower().startswith(family_lower):
-                    family_controls.append(control)
-
-        return family_controls
+        return [
+            control
+            for control in self.flatten_controls(controls_data)
+            if control.get("id", "").upper().startswith(family_upper)
+        ]
 
     def _create_cmmc_framework_data(self) -> dict[str, Any]:
         """Create CMMC framework data structure with levels and controls"""

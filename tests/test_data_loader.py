@@ -4,11 +4,27 @@ Tests for NIST Data Loader
 
 import json
 from pathlib import Path
-from unittest.mock import mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from nist_mcp.data.loader import NISTDataLoader
+
+
+def async_open_mock(read_data: str):
+    """Mock for ``aiofiles.open``.
+
+    The stdlib sync helper builds a *sync* context manager, but aiofiles is used with
+    ``async with``, so it raises TypeError. This returns a mock supporting the async
+    context-manager protocol.
+    """
+    handle = AsyncMock()
+    handle.read.return_value = read_data
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=handle)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
 
 
 class TestNISTDataLoader:
@@ -40,7 +56,7 @@ class TestNISTDataLoader:
         }
 
         with (
-            patch("aiofiles.open", mock_open(read_data=json.dumps(sample_data))),
+            patch("aiofiles.open", async_open_mock(json.dumps(sample_data))),
             patch.object(Path, "exists", return_value=True),
         ):
             result = await loader.load_controls()
@@ -65,9 +81,25 @@ class TestNISTDataLoader:
 
         controls_data = {
             "catalog": {
-                "controls": [
-                    {"id": "AC-1", "title": "Access Control Policy"},
-                    {"id": "AC-2", "title": "Account Management"},
+                "groups": [
+                    {
+                        "id": "ac",
+                        "title": "Access Control",
+                        "controls": [
+                            {"id": "AC-1", "title": "Access Control Policy"},
+                            {
+                                "id": "AC-2",
+                                "title": "Account Management",
+                                # Enhancements nest inside their base control in OSCAL
+                                "controls": [
+                                    {
+                                        "id": "AC-2.1",
+                                        "title": "Automated Account Management",
+                                    }
+                                ],
+                            },
+                        ],
+                    }
                 ]
             }
         }
@@ -76,11 +108,15 @@ class TestNISTDataLoader:
         assert result["id"] == "AC-1"
         assert result["title"] == "Access Control Policy"
 
+        # Enhancements must be findable too, not just group-level base controls
+        enhancement = loader.get_control_by_id(controls_data, "AC-2.1")
+        assert enhancement["title"] == "Automated Account Management"
+
     def test_get_control_by_id_not_found(self):
         """Test control not found by ID"""
         loader = NISTDataLoader(Path("/test"))
 
-        controls_data = {"catalog": {"controls": []}}
+        controls_data = {"catalog": {"groups": []}}
 
         result = loader.get_control_by_id(controls_data, "AC-999")
         assert result is None
@@ -91,21 +127,33 @@ class TestNISTDataLoader:
 
         controls_data = {
             "catalog": {
-                "controls": [
+                "groups": [
                     {
-                        "id": "AC-1",
-                        "title": "Access Control Policy",
-                        "parts": [
+                        "id": "ac",
+                        "title": "Access Control",
+                        "controls": [
                             {
-                                "prose": "The organization develops access control policies"
+                                "id": "AC-1",
+                                "title": "Access Control Policy",
+                                "parts": [
+                                    {
+                                        "prose": "The organization develops access control policies"
+                                    }
+                                ],
                             }
                         ],
                     },
                     {
-                        "id": "AU-1",
-                        "title": "Audit Policy",
-                        "parts": [
-                            {"prose": "The organization develops audit policies"}
+                        "id": "au",
+                        "title": "Audit and Accountability",
+                        "controls": [
+                            {
+                                "id": "AU-1",
+                                "title": "Audit Policy",
+                                "parts": [
+                                    {"prose": "The organization develops audit policies"}
+                                ],
+                            }
                         ],
                     },
                 ]
@@ -122,10 +170,20 @@ class TestNISTDataLoader:
 
         controls_data = {
             "catalog": {
-                "controls": [
-                    {"id": "AC-1", "title": "Access Control Policy"},
-                    {"id": "AC-2", "title": "Account Management"},
-                    {"id": "AU-1", "title": "Audit Policy"},
+                "groups": [
+                    {
+                        "id": "ac",
+                        "title": "Access Control",
+                        "controls": [
+                            {"id": "AC-1", "title": "Access Control Policy"},
+                            {"id": "AC-2", "title": "Account Management"},
+                        ],
+                    },
+                    {
+                        "id": "au",
+                        "title": "Audit and Accountability",
+                        "controls": [{"id": "AU-1", "title": "Audit Policy"}],
+                    },
                 ]
             }
         }

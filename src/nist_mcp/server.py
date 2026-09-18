@@ -34,7 +34,9 @@ class NISTMCPServer:
         if self._control_service is None:
             from .infrastructure.container import DependencyContainer, AppConfig
             config = AppConfig(data_path=self.data_path)
-            container = DependencyContainer(config)
+            # Reuse this server's loader rather than building a second one, so a custom
+            # data path or a patched loader is honoured by the service too.
+            container = DependencyContainer(config, data_loader=self.loader)
             await container.initialize()
             self._control_service = await container.get_control_service()
         return self._control_service

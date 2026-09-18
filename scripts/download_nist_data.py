@@ -8,11 +8,39 @@ from official NIST sources.
 
 import json
 import logging
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import ClassVar
 
 logger = logging.getLogger(__name__)
+
+# Hosts permitted for NIST data downloads. Both serve the official usnistgov
+# repositories; nothing else may be fetched.
+ALLOWED_DOWNLOAD_HOSTS = frozenset(
+    {
+        "raw.githubusercontent.com",
+        "github.com",
+    }
+)
+
+
+def _validate_source_url(url: str) -> None:
+    """Reject any URL that is not HTTPS on an allowlisted host.
+
+    Raises:
+        ValueError: if the scheme is not https or the host is not allowlisted.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(
+            f"Refusing to download from non-HTTPS URL (scheme={parsed.scheme!r}): {url}"
+        )
+    if parsed.hostname not in ALLOWED_DOWNLOAD_HOSTS:
+        raise ValueError(
+            f"Refusing to download from non-allowlisted host {parsed.hostname!r}: {url}. "
+            f"Allowed hosts: {sorted(ALLOWED_DOWNLOAD_HOSTS)}"
+        )
 
 
 class NISTDataDownloader:
@@ -45,10 +73,15 @@ class NISTDataDownloader:
             "description": "NIST SP 800-53 Rev 5 HIGH Baseline Profile",
             "path": "nist-sources/sp800-53/high-baseline.json",
         },
-        "sp800-171-cui-baseline": {
-            "url": "https://raw.githubusercontent.com/usnistgov/OSCAL-content/main/nist.gov/SP800-171/rev2/json/NIST_SP-800-171_rev2_CUI-baseline_profile.json",
-            "description": "NIST SP 800-171 Rev 2 CUI Baseline Profile",
-            "path": "nist-sources/sp800-171/cui-baseline.json",
+        # NIST withdrew the Rev 2 OSCAL content; only Rev 3 is published now, and it
+        # ships a catalog rather than a CUI baseline profile. `load_sp800171_baseline`
+        # falls back to CMMC Level 2 (itself derived from SP 800-171) when no baseline
+        # file is present, while `load_sp800171_catalog` requires this file and used to
+        # fail because nothing ever fetched it.
+        "sp800-171-catalog": {
+            "url": "https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov/SP800-171/rev3/json/NIST_SP800-171_rev3_catalog.json",
+            "description": "NIST SP 800-171 Rev 3 Controls Catalog",
+            "path": "nist-sources/sp800-171/catalog.json",
         },
         "oscal-catalog-schema": {
             "url": "https://github.com/usnistgov/OSCAL/releases/download/v1.1.3/oscal_catalog_schema.json",
@@ -127,10 +160,14 @@ class NISTDataDownloader:
         try:
             logger.info(f"Downloading {source_info['description']}...")
 
-            # SECURITY: Only allow HTTPS URLs from trusted NIST domains for data download
+            # SECURITY: enforce HTTPS and an explicit host allowlist before opening the
+            # URL. urllib otherwise honours file:// and similar schemes, so a
+            # caller-supplied source could read local files into the data directory.
+            _validate_source_url(url)
+
             with urllib.request.urlopen(
                 url
-            ) as response:  # noqa: S310 - Trusted URLs only
+            ) as response:  # noqa: S310 - scheme/host validated above
                 content = response.read().decode("utf-8")
 
                 # Validate JSON content for JSON files

@@ -45,17 +45,20 @@ class TestMCPIntegration:
             {"id": "AC-2", "title": "Account Management"},
         ]
 
+        # The MCP tool is a closure registered inside register_control_endpoints and is
+        # not importable. Exercise the server's public delegate instead, stubbing the
+        # service so the test stays hermetic and needs no downloaded catalog.
+        service = AsyncMock()
+        service.list_controls.return_value = sample_controls
+
         with patch.object(
-            nist_server, "list_nist_controls", new_callable=AsyncMock
-        ) as mock_list:
-            mock_list.return_value = sample_controls
+            nist_server, "_get_control_service", new_callable=AsyncMock
+        ) as mock_service:
+            mock_service.return_value = service
 
-            # Import the tool function
-            from nist_mcp.server import list_controls
-
-            result = await list_controls()
+            result = await nist_server.list_nist_controls()
             assert result == sample_controls
-            mock_list.assert_called_once()
+            service.list_controls.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_control_tool(self):
@@ -67,35 +70,39 @@ class TestMCPIntegration:
             "parts": [],
         }
 
+        service = AsyncMock()
+        service.get_control.return_value = sample_control
+
         with patch.object(
-            nist_server, "get_control_details", new_callable=AsyncMock
-        ) as mock_get:
-            mock_get.return_value = sample_control
+            nist_server, "_get_control_service", new_callable=AsyncMock
+        ) as mock_service:
+            mock_service.return_value = service
 
-            # Import the tool function
-            from nist_mcp.server import get_control
-
-            result = await get_control("AC-1")
+            result = await nist_server.get_control_details("AC-1")
             assert result == sample_control
-            mock_get.assert_called_once_with("AC-1")
+            service.get_control.assert_called_once_with("AC-1")
 
     @pytest.mark.asyncio
     async def test_get_control_tool_not_found(self):
         """Test get_control tool with non-existent control"""
+        service = AsyncMock()
+        service.get_control.side_effect = ValueError("Control AC-999 not found")
+
         with patch.object(
-            nist_server, "get_control_details", new_callable=AsyncMock
-        ) as mock_get:
-            mock_get.side_effect = ValueError("Control AC-999 not found")
+            nist_server, "_get_control_service", new_callable=AsyncMock
+        ) as mock_service:
+            mock_service.return_value = service
 
-            from nist_mcp.server import get_control
-
-            with pytest.raises(ValueError, match="Control AC-999 not found"):
-                await get_control("AC-999")
+            # get_control_details converts a lookup failure into None by design.
+            assert await nist_server.get_control_details("AC-999") is None
 
     def test_mcp_tool_decorators(self):
         """Test that MCP tools are properly decorated"""
-        # Check that tools are registered with the app
-        tool_names = [tool.name for tool in app.tools]
+        # FastMCP exposes no public `.tools` attribute; query its tool manager, which
+        # is the registry the server actually registers endpoints into.
+        manager = getattr(app, "_tool_manager", None)
+        assert manager is not None, "FastMCP tool manager not available"
+        tool_names = list(manager._tools)
 
         expected_tools = ["list_controls", "get_control"]
         for tool_name in expected_tools:
@@ -127,10 +134,8 @@ class TestMCPIntegration:
         ) as mock_list:
             mock_list.return_value = sample_controls
 
-            from nist_mcp.server import list_controls
-
-            # Make multiple concurrent requests
-            tasks = [list_controls() for _ in range(5)]
+            # The MCP tools are closures; call the server's public delegate.
+            tasks = [nist_server.list_nist_controls() for _ in range(5)]
             results = await asyncio.gather(*tasks)
 
             # All results should be the same
@@ -147,7 +152,6 @@ class TestMCPToolValidation:
     @pytest.mark.asyncio
     async def test_get_control_input_validation(self):
         """Test input validation for get_control tool"""
-        from nist_mcp.server import get_control
 
         # Test with empty string
         with patch.object(
@@ -156,12 +160,11 @@ class TestMCPToolValidation:
             mock_get.side_effect = ValueError("Control  not found")
 
             with pytest.raises(ValueError):
-                await get_control("")
+                await nist_server.get_control_details("")
 
     @pytest.mark.asyncio
     async def test_tool_response_format(self):
         """Test that tool responses are properly formatted"""
-        from nist_mcp.server import list_controls
 
         sample_controls = [
             {"id": "AC-1", "title": "Access Control Policy"},
@@ -173,7 +176,7 @@ class TestMCPToolValidation:
         ) as mock_list:
             mock_list.return_value = sample_controls
 
-            result = await list_controls()
+            result = await nist_server.list_nist_controls()
 
             # Validate response structure
             assert isinstance(result, list)
@@ -187,7 +190,6 @@ class TestMCPToolValidation:
     @pytest.mark.asyncio
     async def test_json_serialization(self):
         """Test that tool responses are JSON serializable"""
-        from nist_mcp.server import get_control, list_controls
 
         sample_controls = [{"id": "AC-1", "title": "Test Control"}]
         sample_control = {
@@ -208,11 +210,11 @@ class TestMCPToolValidation:
             mock_get.return_value = sample_control
 
             # Test list_controls serialization
-            list_result = await list_controls()
+            list_result = await nist_server.list_nist_controls()
             json.dumps(list_result)  # Should not raise exception
 
             # Test get_control serialization
-            get_result = await get_control("AC-1")
+            get_result = await nist_server.get_control_details("AC-1")
             json.dumps(get_result)  # Should not raise exception
 
 

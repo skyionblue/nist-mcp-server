@@ -54,10 +54,13 @@ class AppConfig:
 class DependencyContainer:
     """Dependency Injection Container for NIST MCP Services"""
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, data_loader: Any = None):
         self.config = config
         self._services: Dict[str, Any] = {}
         self._initialized = False
+        # Allow an already-configured loader to be supplied. Constructing a second one
+        # unconditionally discards any custom data path or test fixture the caller set up.
+        self._provided_loader = data_loader
 
     async def initialize(self) -> None:
         """Initialize all services"""
@@ -65,9 +68,10 @@ class DependencyContainer:
             return
 
         try:
-            # Initialize data loader first
-            self._services["data_loader"] = NISTDataLoader(self.config.data_path)
-            await self._services["data_loader"].initialize()
+            # Initialize data loader first, reusing one supplied by the caller if given
+            loader = self._provided_loader or NISTDataLoader(self.config.data_path)
+            self._services["data_loader"] = loader
+            await loader.initialize()
 
             # Initialize control service
             self._services["control_service"] = ControlService(self._services["data_loader"])

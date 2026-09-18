@@ -33,12 +33,11 @@ class NISTAnalysisTools:
             evidence_collection_id: ID of evidence collection for evaluation
         """
         try:
-            # Load baseline controls
-            import sys
-            from pathlib import Path
-
-            sys.path.append(str(Path(__file__).parent.parent.parent))
-            from tools.control_tools import ControlTools
+            # Load baseline controls. This previously reached the stale top-level
+            # `tools.control_tools` via a sys.path hack; that copy uses a hard-coded
+            # baseline list and reads a flat `catalog.controls`, so the baseline came
+            # back empty and gap analysis reported no required controls.
+            from .control_tools import ControlTools
 
             tools = ControlTools(self.data_loader)
             baseline_data = await tools.get_control_baselines(target_baseline)
@@ -395,7 +394,7 @@ class NISTAnalysisTools:
 
             # Find control enhancements
             enhancements = []
-            all_controls = controls_data.get("catalog", {}).get("controls", [])
+            all_controls = self.data_loader.flatten_controls(controls_data)
 
             for ctrl in all_controls:
                 ctrl_id = ctrl.get("id", "")
@@ -522,7 +521,7 @@ class NISTAnalysisTools:
         control_family = control.get("id", "")[:2]
 
         # Find other controls in the same family
-        all_controls = controls_data.get("catalog", {}).get("controls", [])
+        all_controls = self.data_loader.flatten_controls(controls_data)
         for ctrl in all_controls:
             ctrl_id = ctrl.get("id", "")
             if ctrl_id.startswith(control_family) and ctrl_id != control.get("id", ""):
@@ -542,7 +541,7 @@ class NISTAnalysisTools:
     ) -> list[dict[str, Any]]:
         """Find controls that reference the given control"""
         referencing = []
-        all_controls = controls_data.get("catalog", {}).get("controls", [])
+        all_controls = self.data_loader.flatten_controls(controls_data)
 
         for ctrl in all_controls:
             # Check if control text mentions the target control

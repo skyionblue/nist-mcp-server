@@ -4,6 +4,7 @@ Provides automated periodic checks for key controls with connector integration.
 """
 
 import asyncio
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Callable
 import logging
@@ -37,7 +38,16 @@ class ControlMonitor:
         parameters: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start monitoring a specific control"""
-        monitor_id = f"monitor_{control_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # A non-positive interval makes _monitor_loop schedule the next check in the
+        # past and sleep for <= 0, producing a tight CPU/storage loop.
+        if check_interval_hours <= 0:
+            raise ValueError(
+                f"check_interval_hours must be positive, got {check_interval_hours}"
+            )
+
+        # Second-precision ids collide when the same control is started twice within a
+        # second: the schedules entry is overwritten and the first task leaks.
+        monitor_id = f"monitor_{control_id}_{uuid.uuid4().hex}"
 
         self.monitored_controls[monitor_id] = {
             "control_id": control_id,
@@ -58,6 +68,24 @@ class ControlMonitor:
             f"Started monitoring for control {control_id} every {check_interval_hours} hours"
         )
         return monitor_id
+
+    async def shutdown(self) -> None:
+        """Cancel and await every scheduled monitoring task.
+
+        The container's shutdown loop only calls `shutdown` if it exists; without this
+        every _monitor_loop kept running after the server shut down.
+        """
+        tasks = list(self.schedules.values())
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self.schedules.clear()
+        self.monitored_controls.clear()
+        logger.info("Control monitor shut down; %d task(s) cancelled", len(tasks))
 
     def stop_monitoring(self, monitor_id: str) -> bool:
         """Stop monitoring a control"""
@@ -180,35 +208,27 @@ class ControlMonitor:
     async def _default_control_check(
         self, control_id: str, parameters: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Default control check implementation (basic status check)"""
-        # This is a placeholder - in practice, this would check actual implementation status
-        # For now, we'll simulate a check based on predetermined logic
+        """Fallback used when a monitor has no connector registered.
 
-        # Simulate different check results based on control ID for demonstration
-        import secrets
-
-        # Default success for basic controls, mixed results for complex ones
-        if control_id in ["AC-1", "AU-1", "AT-1"]:
-            status = "pass"
-            confidence = 0.8 + secrets.randbelow(200) / 1000  # 0.8 to 1.0
-        elif control_id.startswith("CM-") or control_id.startswith("IA-"):
-            status = ["pass", "warning"][secrets.randbelow(2)]
-            confidence = 0.5 + secrets.randbelow(400) / 1000  # 0.5 to 0.9
-        else:
-            status = ["pass", "fail", "warning"][secrets.randbelow(3)]
-            confidence = 0.3 + secrets.randbelow(500) / 1000  # 0.3 to 0.8
-
+        There is no way to determine a control's status without a connector, so this
+        reports ``unknown`` rather than guessing. It previously returned randomised
+        pass/fail/warning values with randomised confidence scores, which meant
+        monitoring could emit compliance findings unrelated to any real system state.
+        """
         return {
-            "status": status,
-            "confidence": round(confidence, 2),
+            "status": "unknown",
+            "confidence": 0.0,
             "timestamp": datetime.now().isoformat(),
             "control_id": control_id,
-            "message": f"Automated check completed for {control_id}",
+            "message": (
+                f"No connector registered for {control_id}; status cannot be "
+                f"determined. Register a connector that implements a real check."
+            ),
             "evidence_paths": [],
             "details": {
-                "check_method": "default_simulation",
+                "check_method": "no_connector",
                 "parameters_used": parameters,
-                "confidence_score": confidence,
+                "confidence_score": 0.0,
             },
         }
 

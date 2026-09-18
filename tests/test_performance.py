@@ -73,10 +73,14 @@ class TestPerformance:
             results = await asyncio.gather(*tasks)
             end_time = time.time()
 
-            # All requests should succeed
+            # All requests should succeed. get_control enriches the raw control with
+            # family/properties/links, so compare the identifying fields rather than
+            # asserting equality with the bare fixture.
             assert len(results) == 50
             for result in results:
-                assert result == sample_control
+                assert result is not None
+                assert result["id"] == sample_control["id"]
+                assert result["title"] == sample_control["title"]
 
             # Should complete within reasonable time
             assert end_time - start_time < 2.0

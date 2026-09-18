@@ -19,27 +19,12 @@ class ControlService:
         try:
             controls_data = await self.data_loader.load_controls()
 
-            # OSCAL structure: controls are nested in groups, not directly in catalog
-            # Include both base controls and their enhancements
-            all_controls = []
-            groups = controls_data.get("catalog", {}).get("groups", [])
-
-            for group in groups:
-                group_controls = group.get("controls", [])
-                for control in group_controls:
-                    # Add the base control
-                    all_controls.append({
-                        "id": control.get("id", ""),
-                        "title": control.get("title", "")
-                    })
-
-                    # Add any enhancements nested within the control
-                    enhancements = control.get("controls", [])
-                    for enhancement in enhancements:
-                        all_controls.append({
-                            "id": enhancement.get("id", ""),
-                            "title": enhancement.get("title", "")
-                        })
+            # One canonical accessor: yields base controls and nested enhancements, and
+            # tolerates either the grouped or flat catalog shape.
+            all_controls = [
+                {"id": control.get("id", ""), "title": control.get("title", "")}
+                for control in self.data_loader.flatten_controls(controls_data)
+            ]
 
             # Apply limit if specified
             if limit and limit > 0:
@@ -47,8 +32,16 @@ class ControlService:
 
             return all_controls
         except Exception as e:
+            # Two requirements pull in opposite directions here:
+            #  - a load failure must not become an empty list, or a missing catalog is
+            #    indistinguishable from one with no controls and the caller sees success;
+            #  - the message returned to a caller must not leak filesystem paths.
+            # So: log the detail server-side, raise a sanitized error to the caller.
             logger.error(f"Error loading controls: {e}")
-            return []
+            raise RuntimeError(
+                "Failed to load the NIST controls catalog. See the server log for "
+                "details, and confirm the data download step has been run."
+            ) from e
 
     async def get_control(self, control_id: str) -> Dict[str, Any]:
         """Get detailed information about a specific control"""
@@ -139,13 +132,16 @@ class ControlService:
         for control in family_controls:
             control_id = control.get("id", "")
 
-            # Check if this is an enhancement (contains parentheses)
-            if "(" in control_id:
+            # OSCAL writes enhancements in dot notation ("ac-2.1"); the parenthesised
+            # form ("AC-2(1)") only appears in prose. Testing for "(" alone classified
+            # every enhancement as a base control and reported zero enhancements.
+            if "." in control_id or "(" in control_id:
+                base_control = control_id.split(".")[0].split("(")[0]
                 enhancements.append(
                     {
                         "id": control_id,
                         "title": control.get("title", ""),
-                        "base_control": control_id.split("(")[0],
+                        "base_control": base_control,
                     }
                 )
             else:

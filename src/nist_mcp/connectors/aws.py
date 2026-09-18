@@ -18,6 +18,11 @@ class AWSConnector(CloudServiceConnector):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.client_configs = config.get("client_configs", {})
+        # This connector has no real AWS implementation: every _check_* method below
+        # returns a hard-coded response. It must therefore never be used to produce
+        # compliance findings. Callers that genuinely want the stub (tests, demos) must
+        # opt in explicitly, and even then results are reported as `unknown`.
+        self.simulation_mode = bool(config.get("simulation_mode", False))
         # In a real implementation, this would initialize boto3 clients
         # self.s3_client = None
         # self.ec2_client = None
@@ -26,10 +31,18 @@ class AWSConnector(CloudServiceConnector):
 
     async def connect(self) -> bool:
         """Connect to AWS services"""
+        if not self.simulation_mode:
+            raise NotImplementedError(
+                "AWSConnector has no real AWS implementation — its checks return "
+                "hard-coded values and must not be used as compliance evidence. "
+                "Pass simulation_mode=True in the connector config to use it as an "
+                "explicit test stub (results are then reported as 'unknown')."
+            )
         try:
-            # Simulate AWS connection
-            # In reality: use boto3.Session with credentials
-            logger.info("Connecting to AWS services...")
+            logger.warning(
+                "AWSConnector connected in SIMULATION MODE — responses are stubs, "
+                "not observations of any AWS account."
+            )
             self.connected = True
             return True
         except Exception as e:
@@ -42,6 +55,22 @@ class AWSConnector(CloudServiceConnector):
         self.connected = False
         logger.info("Disconnected from AWS services")
 
+    @staticmethod
+    def _mark_simulated(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Downgrade a stubbed check result so it cannot read as real evidence.
+
+        The status becomes ``unknown`` regardless of what the stub returned, and the
+        response is tagged so callers and stored history can tell the difference.
+        """
+        marked = dict(result)
+        marked["simulated"] = True
+        marked["status"] = "unknown"
+        marked["reason"] = (
+            "AWSConnector is a stub with no real AWS implementation; this result is "
+            "not evidence of the state of any AWS account."
+        )
+        return marked
+
     async def check_control(
         self, control_id: str, parameters: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -52,25 +81,29 @@ class AWSConnector(CloudServiceConnector):
         try:
             # Route control checks to appropriate AWS service checks
             if control_id.startswith("AC-"):
-                return await self._check_access_control(control_id, parameters)
+                result = await self._check_access_control(control_id, parameters)
             elif control_id.startswith("CM-"):
-                return await self._check_configuration_management(
+                result = await self._check_configuration_management(
                     control_id, parameters
                 )
             elif control_id.startswith("IA-"):
-                return await self._check_identification_authentication(
+                result = await self._check_identification_authentication(
                     control_id, parameters
                 )
             elif control_id.startswith("AU-"):
-                return await self._check_audit_accountability(control_id, parameters)
+                result = await self._check_audit_accountability(control_id, parameters)
             elif control_id.startswith("CP-"):
-                return await self._check_continuity_planning(control_id, parameters)
+                result = await self._check_continuity_planning(control_id, parameters)
             elif control_id.startswith("SI-"):
-                return await self._check_system_integrity(control_id, parameters)
+                result = await self._check_system_integrity(control_id, parameters)
             elif control_id.startswith("PE-"):
-                return await self._check_physical_environmental(control_id, parameters)
+                result = await self._check_physical_environmental(control_id, parameters)
             else:
-                return await self._default_check(control_id, parameters)
+                result = await self._default_check(control_id, parameters)
+
+            # Every branch above returns a hard-coded response. Downgrade it so a stub can
+            # never be mistaken for an observation of a real AWS account.
+            return self._mark_simulated(result)
 
         except Exception as e:
             logger.error(f"Error checking control {control_id}: {e}")
@@ -104,6 +137,13 @@ class AWSConnector(CloudServiceConnector):
             else:
                 evidence.update(await self._collect_general_evidence(parameters))
 
+            # These collectors return hard-coded values, so the "evidence" is a stub.
+            # Tag it rather than let it flow into a workflow as real evidence.
+            evidence["simulated"] = True
+            evidence["reason"] = (
+                "AWSConnector is a stub; this is not evidence collected from any AWS "
+                "account."
+            )
             return evidence
 
         except Exception as e:
@@ -118,8 +158,13 @@ class AWSConnector(CloudServiceConnector):
         return {
             "resource_type": resource_type,
             "resource_id": resource_id,
-            "status": "active",  # Simulated
+            "status": "unknown",
             "connector": "AWS",
+            "simulated": True,
+            "reason": (
+                "AWSConnector is a stub and does not query AWS; resource status is "
+                "unknown."
+            ),
         }
 
     async def list_resources(

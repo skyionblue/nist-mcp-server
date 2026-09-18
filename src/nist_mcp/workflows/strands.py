@@ -395,10 +395,22 @@ async def gap_analysis_step(
     analysis = NISTAnalysisTools(data_loader)
     target_controls = context.get("target_controls", [])
 
-    # Simulate implemented controls (in practice, this would come from evidence)
-    implemented_controls = [
-        ctrl for ctrl in target_controls if hash(ctrl) % 3 != 0
-    ]  # Random simulation
+    # Implemented controls must come from supplied evidence. This previously derived
+    # them from `hash(ctrl) % 3`, which is process-randomised: identical inputs produced
+    # different "compliance" results and marked controls implemented arbitrarily.
+    implemented_controls = context.get("implemented_controls")
+    if implemented_controls is None:
+        return {
+            "step_type": "gap_analysis",
+            "baseline": baseline,
+            "status": "insufficient_evidence",
+            "result": None,
+            "message": (
+                "No implemented_controls supplied in the workflow context. Gap analysis "
+                "needs observed evidence of which controls are implemented; it will not "
+                "infer them."
+            ),
+        }
 
     result = await analysis.gap_analysis(implemented_controls, baseline)
 
@@ -421,11 +433,16 @@ async def monitoring_check_step(
             # Use monitor for real checks
             result = await monitor.run_immediate_check(control_id)
         else:
-            # Simulate result
+            # No monitor injected. Report that rather than inventing a status — this
+            # previously derived pass/fail from `hash(control_id) % 4`.
             result = {
-                "status": "pass" if hash(control_id) % 4 != 0 else "fail",
+                "status": "unknown",
                 "control_id": control_id,
                 "timestamp": datetime.now().isoformat(),
+                "message": (
+                    "No monitor available in the workflow context; control status "
+                    "cannot be determined."
+                ),
             }
         check_results[control_id] = result
 
@@ -442,14 +459,26 @@ async def evidence_collection_step(context: Dict[str, Any]) -> Dict[str, Any]:
     """Step to collect evidence for controls"""
     target_controls = context.get("target_controls", [])
 
-    # Simulate evidence collection
+    # Evidence must be supplied by a real collector. This previously fabricated both
+    # `evidence_found` and `evidence_count` from `hash(control_id)`.
+    collector = context.get("evidence_collector")
     evidence_results = {}
     for control_id in target_controls:
-        evidence_results[control_id] = {
-            "evidence_found": hash(control_id + "evidence") % 2 == 0,
-            "evidence_count": hash(control_id) % 5 + 1,
-            "timestamp": datetime.now().isoformat(),
-        }
+        if collector is None:
+            evidence_results[control_id] = {
+                "evidence_found": None,
+                "evidence_count": None,
+                "status": "unknown",
+                "timestamp": datetime.now().isoformat(),
+                "message": (
+                    "No evidence_collector supplied in the workflow context; evidence "
+                    "presence cannot be determined."
+                ),
+            }
+        else:
+            evidence_results[control_id] = await collector.collect_evidence(
+                control_id, context.get("evidence_parameters", {})
+            )
 
     context["evidence_results"] = evidence_results
 

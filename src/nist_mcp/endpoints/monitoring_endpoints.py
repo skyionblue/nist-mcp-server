@@ -11,6 +11,41 @@ from ..infrastructure.container import get_container
 
 logger = logging.getLogger(__name__)
 
+# Config keys whose values must never be written to the history database.
+_SECRET_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "credentials",
+        "password",
+        "secret",
+        "secret_key",
+        "token",
+        "access_key",
+        "secret_access_key",
+        "session_token",
+        "private_key",
+    }
+)
+
+
+def _redact_secrets(config: dict) -> dict:
+    """Return a copy of a connector config with secret values replaced.
+
+    Connector configs are persisted verbatim into a local SQLite database. Anything
+    credential-shaped is replaced with a marker so the stored row keeps its useful
+    non-sensitive metadata without retaining the secret.
+    """
+    redacted = {}
+    for key, value in (config or {}).items():
+        if key.lower() in _SECRET_KEYS:
+            redacted[key] = "***redacted***"
+        elif isinstance(value, dict):
+            redacted[key] = _redact_secrets(value)
+        else:
+            redacted[key] = value
+    return redacted
+
 
 def register_monitoring_endpoints(app: FastMCP, loader: Any) -> None:
     """Register all monitoring and workflow endpoints with the MCP app"""
@@ -62,6 +97,13 @@ def register_monitoring_endpoints(app: FastMCP, loader: Any) -> None:
         control_id: str, check_interval_hours: int = 24, connector_id: Optional[str] = None
     ) -> dict[str, Any]:
         """Start continuous monitoring for a specific control"""
+        # Validate at the API boundary as well as in the monitor: a zero or negative
+        # interval schedules the next check in the past and spins.
+        if check_interval_hours <= 0:
+            raise ValueError(
+                f"check_interval_hours must be positive, got {check_interval_hours}"
+            )
+
         container = get_container()
         monitor = await container.get_monitor_service()
 
@@ -370,11 +412,16 @@ def register_monitoring_endpoints(app: FastMCP, loader: Any) -> None:
             container = get_container()
             storage = await container.get_storage_service()
 
-            connector_id = storage.register_connector(
+            storage.register_connector(
                 {
+                    # Persist the connector id the monitor is keyed by, so a caller can
+                    # use the returned id with start_continuous_monitoring/run_manual_check.
+                    "connector_id": connector.connector_id,
                     "name": config.get("name", connector.connector_id),
                     "type": connector_type,
-                    "config": config,
+                    # Never persist credentials: BaseConnector configs carry fields like
+                    # api_key/credentials, and this row lands in a local SQLite file.
+                    "config": _redact_secrets(config),
                     "status": "active",
                 }
             )
@@ -385,7 +432,10 @@ def register_monitoring_endpoints(app: FastMCP, loader: Any) -> None:
                 monitor.register_connector(connector.connector_id, connector)
 
             return {
-                "connector_id": connector_id,
+                # Return the id the monitor is keyed by, not the storage row id: the two
+                # differed, so passing the returned id back in found no connector and
+                # silently fell through to the default check.
+                "connector_id": connector.connector_id,
                 "type": connector_type,
                 "status": "registered",
                 "message": f"Connector '{connector.name}' registered successfully",

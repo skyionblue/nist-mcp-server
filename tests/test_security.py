@@ -7,12 +7,28 @@ Tests for security vulnerabilities and secure coding practices.
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from nist_mcp.data.loader import NISTDataLoader
 from nist_mcp.server import NISTMCPServer
+
+
+def async_open_mock(read_data: str):
+    """Mock for ``aiofiles.open``.
+
+    The stdlib sync helper builds a *sync* context manager, but aiofiles is used with
+    ``async with``, so it raises TypeError. This returns a mock supporting the async
+    context-manager protocol.
+    """
+    handle = AsyncMock()
+    handle.read.return_value = read_data
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=handle)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
 
 
 class TestInputValidation:
@@ -104,10 +120,20 @@ class TestInputValidation:
         """Test that file access is properly restricted"""
         loader = NISTDataLoader(Path("/test/data"))
 
-        # Mock file operations to test access patterns
+        # Mock file operations to test access patterns.
+        #  - Path.exists must be patched: load_controls checks for the catalog before
+        #    opening it, so otherwise it raises and the mocked open is never reached.
+        #  - aiofiles.open is an *async* context manager, so mock_open does not work;
+        #    build one that supports __aenter__/__aexit__.
+        handle = AsyncMock()
+        handle.read.return_value = '{"catalog": {"groups": []}}'
+        async_cm = MagicMock()
+        async_cm.__aenter__ = AsyncMock(return_value=handle)
+        async_cm.__aexit__ = AsyncMock(return_value=False)
+
         with patch(
-            "aiofiles.open", mock_open(read_data='{"test": "data"}')
-        ) as mock_file:
+            "aiofiles.open", MagicMock(return_value=async_cm)
+        ) as mock_file, patch.object(Path, "exists", return_value=True):
             # Should only access files within the data directory
             await loader.load_controls()
 
@@ -138,7 +164,7 @@ class TestDataIntegrity:
         ]
 
         for invalid_data in invalid_data_samples:
-            with patch("aiofiles.open", mock_open(read_data=invalid_data)):
+            with patch("aiofiles.open", async_open_mock(invalid_data)):
                 with patch.object(Path, "exists", return_value=True):
                     try:
                         result = await loader.load_controls()
@@ -167,7 +193,7 @@ class TestDataIntegrity:
             </control>
         </catalog>"""
 
-        with patch("aiofiles.open", mock_open(read_data=xxe_payload)):
+        with patch("aiofiles.open", async_open_mock(xxe_payload)):
             with patch.object(Path, "exists", return_value=True):
                 try:
                     # Should not process XXE entities
@@ -312,11 +338,17 @@ class TestPrivacyAndDataHandling:
         cache_attributes = [attr for attr in dir(loader) if attr.endswith("_cache")]
 
         # Should only have expected caches
+        # Derived from the loader's actual attributes; keep in sync when caches change.
         expected_caches = [
+            "_baselines_cache",
+            "_cmmc_cache",
             "_controls_cache",
             "_csf_cache",
+            "_fedramp_cache",
             "_mappings_cache",
             "_schemas_cache",
+            "_sp800171_baseline_cache",
+            "_sp800171_catalog_cache",
         ]
         for cache_attr in cache_attributes:
             assert cache_attr in expected_caches, f"Unexpected cache: {cache_attr}"

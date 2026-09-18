@@ -96,7 +96,15 @@ def run_integration_tests():
     tests = [
         ("pytest tests/test_mcp_integration.py -v", "MCP Integration Tests"),
         (
-            'python -c "import asyncio; from src.nist_mcp.server import NISTMCPServer; asyncio.run(NISTMCPServer().loader.initialize())"',
+            # Pass argv as a list: run_command splits plain strings with str.split(),
+            # which would shred this -c expression into fragments and fail before the
+            # check ran.
+            [
+                sys.executable,
+                "-c",
+                "import asyncio; from nist_mcp.server import NISTMCPServer; "
+                "asyncio.run(NISTMCPServer().loader.initialize())",
+            ],
             "Server Initialization Test",
         ),
     ]
